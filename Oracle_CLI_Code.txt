@@ -1,0 +1,111 @@
+pyspark
+
+// Import Spark ML libraries
+
+import numpy as np
+
+from pyspark.sql.types import *
+from pyspark.sql.functions import *
+from pyspark.sql import functions as F
+from pyspark.sql import SQLContext
+sqlContext = SQLContext(sc)
+from pyspark.ml import Pipeline
+from pyspark.ml.feature import VectorAssembler, StringIndexer
+from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
+from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.ml.regression import LinearRegression, DecisionTreeRegressor
+
+import sys
+
+// Load the file
+csv1 = spark.read.csv('/user/rjoshi5/youth_risk_behaviours.csv', inferSchema=True, header=True)
+
+
+csv1.createOrReplaceTempView("table1")
+df1 = spark.sql("SELECT count(*), Topic from table1 group by Topic")
+
+df2 = spark.sql("SELECT * from table1 where Topic = 'Obesity, Overweight, and Weight Control'")
+df3 = df2.filter(df2.Greater_Risk_Data_Value.isNotNull())
+
+
+data = df3.select("YEAR", "LocationDesc", "Sex", "Race", "Grade", "SubTopicID", "QuestionCode", "LocationId", "StratID1", col("Greater_Risk_Data_Value").cast("double").alias("label"))  
+
+
+// Convert string types values of features to indexed values
+
+data = StringIndexer(inputCol='LocationDesc', outputCol='LocationDesc'+"_index").fit(data).transform(data)
+data = StringIndexer(inputCol='Sex', outputCol='Sex'+"_index").fit(data).transform(data)
+data = StringIndexer(inputCol='Race', outputCol='Race'+"_index").fit(data).transform(data)
+data = StringIndexer(inputCol='Grade', outputCol='Grade'+"_index").fit(data).transform(data)
+data = StringIndexer(inputCol='SubTopicID', outputCol='SubTopicID'+"_index").fit(data).transform(data)
+data = StringIndexer(inputCol='QuestionCode', outputCol='QuestionCode'+"_index").fit(data).transform(data)
+data = StringIndexer(inputCol='LocationId', outputCol='LocationId'+"_index").fit(data).transform(data)
+data = StringIndexer(inputCol='StratID1', outputCol='StratID1'+"_index").fit(data).transform(data)
+
+
+// Split the data into 70-30 ratio for train and test purposes
+
+splits = data.randomSplit([0.7, 0.3])
+
+lr_train = splits[0]
+lr_test = splits[1].withColumnRenamed("label", "trueLabel")
+
+dt_train = splits[0]
+dt_test = splits[1].withColumnRenamed("label", "trueLabel")
+
+
+// Vector assembler to create a 'features' column out of selected columns
+
+assembler = VectorAssembler(inputCols = ["YEAR", "LocationDesc_index", "Sex_index", "Race_index", "Grade_index", "SubTopicID_index", "QuestionCode_index", "LocationId_index", "StratID1_index"], outputCol="features")
+
+
+// Linear Regression 
+
+lr = LinearRegression(featuresCol = 'features', labelCol='label', maxIter=12345, regParam=0.4, elasticNetParam=0.7)
+lr_pipeline = Pipeline(stages=[assembler, lr])
+lr_model = lr_pipeline.fit(lr_train)
+
+// Comparison between predicted and actual values
+lr_prediction = lr_model.transform(lr_test)
+lr_predicted = lr_prediction.select("features", "prediction", "trueLabel")
+lr_predicted.show()
+
+// Root Mean Square Error and Accuracy from Linear Regression
+
+lr_evaluator = RegressionEvaluator(labelCol="trueLabel", predictionCol="prediction", metricName="rmse")
+rmse = lr_evaluator.evaluate(lr_prediction)
+print("RMSE for linear regression is: %.4f" % rmse)
+
+
+lr_accuracy = lr_evaluator.evaluate(lr_prediction, {lr_evaluator.metricName: "r2"})
+print("linear regression model accuracy is: %.3f" %(lr_accuracy*100))
+
+
+// Decision Tree Regression
+
+dt = DecisionTreeRegressor(featuresCol='features', labelCol='label', maxBins=91)
+dt_pipeline = Pipeline(stages=[assembler, dt])
+paramGrid = ParamGridBuilder().build()
+cv = CrossValidator(estimator=dt_pipeline, evaluator=RegressionEvaluator(), estimatorParamMaps=paramGrid, numFolds=10)
+dt_model = cv.fit(dt_train)
+
+
+dt_prediction = dt_model.transform(dt_test)
+dt_predicted = dt_prediction.select("features", "prediction", "trueLabel")
+dt_predicted.show()
+
+
+// Root Mean Square Error and Accuracy from Linear Regression
+dt_evaluator = RegressionEvaluator(labelCol="trueLabel", predictionCol="prediction", metricName="rmse")
+dt_rmse = dt_evaluator.evaluate(dt_prediction)
+print ("Root Mean Square Error (RMSE):", dt_rmse)
+
+
+dt_accuracy_evaluator=RegressionEvaluator(labelCol="trueLabel", predictionCol="prediction",metricName="r2")
+dt_accuracy=dt_accuracy_evaluator.evaluate(dt_prediction)
+print("accuracy  on test data=%g" % (dt_accuracy*100))
+
+
+
+
+
